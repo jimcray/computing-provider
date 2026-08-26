@@ -2,6 +2,37 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## ⚠️ This repository is PUBLIC
+
+Anything committed here is world-readable the moment it is pushed, and stays
+reachable in git history and in forks even after it is deleted. A previous
+commit put an internal competitive-strategy document here and it had to be
+removed after the fact — deletion did not unpublish it.
+
+**Do not commit to this repo:**
+
+- Anything marked "Internal", "Confidential", or "not for external distribution"
+- Marketplace economics: pool settlement figures, subscription revenue, payout
+  ratios, margins, unit costs
+- Competitor analysis or strategic positioning
+- Verification internals: sampling rates, detection thresholds, which requests
+  are probes, or how probe traffic is selected — publishing these tells a
+  dishonest provider exactly how to stay under them
+- Credentials, API keys, private keys, or customer data
+
+**Where that material belongs:** the private `swanchain/swan-inference`
+repository. This repo is the provider *client*; if a document is about the
+marketplace rather than about running a node, it almost certainly belongs there.
+
+**What is fine here:** anything a provider operator needs in order to run a
+node — protocol shapes, configuration, model setup, declared capability formats,
+and the behavioural consequences of platform rules (for example, that failing
+repeatedly removes you from routing).
+
+CI enforces a keyword scan on changed files; see
+`.github/workflows/internal-docs-guard.yaml`. It is a safety net for the obvious
+cases, not a substitute for judgement.
+
 ## Git Commit Policy
 
 - Do NOT include `Co-Authored-By` lines in commit messages

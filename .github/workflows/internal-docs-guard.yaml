@@ -1,0 +1,90 @@
+name: Internal docs guard
+
+# This repository is PUBLIC. This job is a safety net against internal material
+# reaching it — it scans only the files a PR or push actually changes, and fails
+# loudly rather than silently.
+#
+# It is deliberately narrow: it looks for explicit internal markers and for
+# marketplace-economics vocabulary that has no reason to appear in a provider
+# client. It will not catch everything, and it is not a substitute for the
+# judgement documented in CLAUDE.md.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine changed files
+        id: changed
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            base="${{ github.event.pull_request.base.sha }}"
+            head="${{ github.event.pull_request.head.sha }}"
+          else
+            base="${{ github.event.before }}"
+            head="${{ github.sha }}"
+            # First push to a new branch, or an unknown base: fall back to the
+            # previous commit rather than scanning the whole repository.
+            if [ -z "$base" ] || [ "$base" = "0000000000000000000000000000000000000000" ]; then
+              base="${head}~1"
+            fi
+          fi
+          git diff --name-only --diff-filter=ACMR "$base" "$head" > changed.txt || git ls-files > changed.txt
+          echo "count=$(wc -l < changed.txt)" >> "$GITHUB_OUTPUT"
+          echo "Changed files:"; cat changed.txt
+
+      - name: Scan for internal markers
+        run: |
+          set -uo pipefail
+          fail=0
+
+          # Explicit markers. These are unambiguous: a document that says it is
+          # internal must not be in a public repository.
+          markers='Internal — not for external distribution|Internal - not for external distribution|not for external distribution|CONFIDENTIAL|Confidential — |INTERNAL ONLY|Internal only, do not distribute'
+
+          # Marketplace economics and verification internals. A provider client
+          # has no reason to discuss these; the marketplace repo does.
+          economics='subscription pool|pool settlement|projected (settlement )?ratio|payout ratio|platform margin|gross margin|competitive landscape|competitor analysis'
+          verification='logprob_sample_rate|sampling rate of [0-9]|detection threshold|probe selection|which requests are probes'
+
+          while IFS= read -r f; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              .github/workflows/internal-docs-guard.yaml|CLAUDE.md) continue ;;
+            esac
+
+            if grep -nEi "$markers" "$f" >/dev/null 2>&1; then
+              echo "::error file=$f::Contains an explicit internal-only marker. This repository is PUBLIC — move it to the private swan-inference repo."
+              grep -nEi "$markers" "$f" | head -3 | sed 's/^/    /'
+              fail=1
+            fi
+
+            if grep -nEi "$economics" "$f" >/dev/null 2>&1; then
+              echo "::error file=$f::Mentions marketplace economics, which belong in the private swan-inference repo, not the public provider client."
+              grep -nEi "$economics" "$f" | head -3 | sed 's/^/    /'
+              fail=1
+            fi
+
+            if grep -nEi "$verification" "$f" >/dev/null 2>&1; then
+              echo "::error file=$f::Mentions verification internals. Publishing sampling rates or thresholds tells a dishonest provider how to stay under them."
+              grep -nEi "$verification" "$f" | head -3 | sed 's/^/    /'
+              fail=1
+            fi
+          done < changed.txt
+
+          if [ "$fail" -ne 0 ]; then
+            echo ""
+            echo "See the '⚠️ This repository is PUBLIC' section of CLAUDE.md."
+            echo "If a match is a false positive, adjust the pattern in this workflow"
+            echo "in the same PR and say why in the description."
+            exit 1
+          fi
+          echo "No internal material detected in the changed files."
