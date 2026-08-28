@@ -159,7 +159,11 @@ func (s *InferenceService) updateClientModels() {
 	}
 	s.client.SetModelList(models)
 	if s.client.IsConnected() {
-		s.client.register()
+		// The error was discarded before: a re-registration that timed out on a
+		// full send buffer (pumps dead, #73) left no trace at all.
+		if err := s.client.register(); err != nil {
+			logs.GetLogger().Errorf("Re-registration after model set change failed: %v", err)
+		}
 	}
 }
 
