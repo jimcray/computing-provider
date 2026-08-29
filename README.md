@@ -319,7 +319,23 @@ Set a webhook in `config.toml` and the provider tells you when something breaks:
 WebhookURL = "https://hooks.example.com/provider"
 ```
 
-It fires on a model going unhealthy, a model that passes health checks while failing most of its requests, a lost connection to Swan Inference, and a failed daily self-check — each with a matching recovery event. See [docs/configuration.md](docs/configuration.md#alerts) for the payload and tuning.
+Or by email, with no receiver to run:
+
+```toml
+[Alerts.Email]
+Host = "smtp.gmail.com"
+Port = 587
+Username = "you@example.com"
+To = ["you@example.com"]
+```
+
+```bash
+# Most providers (Gmail, Outlook, Yahoo) need an app password, not your login password
+export SMTP_PASSWORD='your-app-password'   # keep it out of config.toml
+computing-provider alerts test             # verify before you need it
+```
+
+Either transport, or both. Alerts fire on a model going unhealthy, a model that passes health checks while failing most of its requests, a lost connection to Swan Inference, and a failed daily self-check — each with a matching recovery event. See [docs/configuration.md](docs/configuration.md#alerts) for the payload and tuning.
 
 ### Logging
 
