@@ -77,7 +77,7 @@ computing-provider inference status
 
 The setup wizard auto-discovers Ollama models and matches them to Swan Inference model IDs (e.g., `qwen2.5:7b` → `qwen-2.5-7b`).
 
-> **Want to maximize earnings?** The quickstart uses Qwen 2.5 7B as an example, but UBI rewards are based on real token traffic. Serving other in-demand models means less competition and more requests routed to you. See the [Switching Models](#switching-models) section to get started.
+> **Want to maximize earnings?** The quickstart uses Qwen 2.5 7B as an example, but you are paid per token actually served. Serving other in-demand models means less competition and more requests routed to you. See the [Switching Models](#switching-models) section to get started.
 
 ---
 
@@ -95,7 +95,7 @@ Connect ──▶ Benchmark ──▶ Approval ──▶ Collateral ──▶ Ac
 | **Connect** | Provider connects to the network and registers its models | Immediate |
 | **Benchmark** | Automated benchmarks verify your GPU can serve the registered models | Minutes (automatic) |
 | **Approval** | Admin reviews your provider | < 24 hours |
-| **Collateral** | Deposit collateral to secure your position and unlock earnings (Stripe/PayPal or USDC/USDT on-chain) | Instant |
+| **Collateral** | Deposit collateral to secure your position and unlock earnings (card, USDC on Ethereum or Base, or SWAN on Swan Chain) | Instant |
 | **Active** | Start receiving inference requests and earning rewards | Ongoing |
 
 > **Grace period:** New providers get a 7-day grace period after activation. During this period, benchmark failures and low uptime won't affect your routing priority, giving you time to stabilize your setup.
@@ -128,7 +128,7 @@ Swan Inference (Cloud)
 2. Registers available models
 3. Receives inference requests via WebSocket
 4. Forwards to local model server, returns response
-5. **Earn rewards** for completed requests (optional wallet setup)
+5. **Get paid per token** for completed requests (a beneficiary wallet is needed for payouts)
 
 ---
 
@@ -480,46 +480,27 @@ computing-provider inference status
 
 ---
 
-## Earning Rewards (Optional)
+## Getting Paid
 
-To receive SWAN token rewards for completed inference requests, set your beneficiary wallet:
+You are paid **per token, for every request you serve**. Each model in the catalog publishes a payout price per 1M input and output tokens; your earnings accrue at that rate and are shown in the [Provider Dashboard](https://inference.swanchain.io/dashboard) and by `computing-provider inference status`. There is no UBI and no allocation for idle hardware — the Swan 1.0 UBI program has ended — so traffic is the only thing that earns.
+
+Set the wallet that payouts go to:
 
 ```bash
-# Set the wallet address where rewards will be sent
 computing-provider inference set-beneficiary 0xYourWalletAddress
 ```
 
-For on-chain collateral (optional, enables staking rewards):
+Payouts are requested from the dashboard: minimum $10, flat $1 fee, one request per chain per hour. Earnings can also be converted into inference credit on the same account.
+
+**Collateral is required for activation**, not optional. Deposit on-chain (USDC on Ethereum or Base, SWAN on Swan Chain) or by card; it is refundable with a 7-day waiting period.
 
 ```bash
-# Get deposit instructions and check your collateral status
+# Get deposit instructions (chains, contracts, minimums) and check your status
 computing-provider inference deposit
 computing-provider inference deposit --check
 ```
 
-> **Note:** You can run the provider without a wallet - it will still serve inference requests, but you won't receive on-chain rewards.
-
-### How UBI Rewards Are Calculated
-
-Your daily SWAN reward is based on a **weight** that combines four factors:
-
-```
-weight = usage_factor × uptime_factor × success_factor × benchmark_factor
-```
-
-| Factor | What it measures | How to maximize |
-|--------|-----------------|-----------------|
-| **Usage factor** | Your share of real token throughput across the network (sqrt-compressed) | Serve more inference requests — idle providers with zero tokens receive zero UBI |
-| **Uptime factor** | How consistently your provider stays online | Keep your provider running 24/7 with stable connectivity |
-| **Success factor** | Ratio of successful responses to total requests | Ensure your model server is healthy and responding correctly |
-| **Benchmark factor** | Performance on periodic benchmarks (math, code, reasoning, latency) | Use recommended model servers (SGLang) and follow [performance tuning best practices](docs/sglang-best-practices.md) |
-
-**Key points:**
-- **Traffic matters most.** Usage factor is based on actual tokens served — registering a powerful GPU without serving traffic won't earn rewards.
-- **Output tokens count 3x** compared to input tokens, so models that generate longer responses contribute more to your usage share.
-- **Rewards scale sub-linearly.** The usage factor uses square-root compression, so doubling your traffic increases your factor by ~1.4x (not 2x). This keeps rewards accessible to smaller providers.
-
-> **Tip:** Run `computing-provider inference status` to see your current earnings breakdown and check how your provider is performing relative to the network.
+> **Tip:** `computing-provider inference recommend-models` ranks catalog models by current demand against your hardware — the fastest way to find traffic.
 
 ---
 
@@ -677,20 +658,20 @@ If you're just testing, ask the Swan team on [Discord](https://discord.gg/3uQUWz
 
 ### Earnings & Collateral
 
-**Q: How do I earn rewards?**
-You earn in two ways: **per-request earnings** based on token usage (input + output tokens) multiplied by the model's per-token price, and **daily UBI rewards** (SWAN tokens) distributed based on your provider's weight — a combination of token throughput, uptime, success rate, and benchmark scores. Serving more real inference traffic increases both. See [How UBI Rewards Are Calculated](#how-ubi-rewards-are-calculated) for the full UBI breakdown.
+**Q: How do I earn?**
+Per token: input and output tokens of every request you serve, multiplied by that model's published payout price. There is no UBI or daily allocation any more — only served traffic earns. See [Getting Paid](#getting-paid).
 ```bash
 computing-provider inference status   # Shows current stage and earnings summary
 ```
-Payouts are processed when your balance reaches the minimum threshold ($50). Set a beneficiary wallet to receive payouts:
+Request a payout from the dashboard once your withdrawable balance is at least $10 (flat $1 fee). Set a beneficiary wallet first:
 ```bash
 computing-provider inference set-beneficiary 0xYourWalletAddress
 ```
 
 **Q: What are the collateral deposit options?**
-After your provider is approved, you can deposit collateral via:
-- **USD (off-chain):** Stripe or PayPal — pay through the Provider Dashboard
-- **Stablecoin (on-chain):** USDC or USDT on supported chains (Base, Ethereum)
+Collateral is required before activation. Deposit via:
+- **Card:** Stripe, through the Provider Dashboard
+- **On-chain:** USDC on Ethereum or Base, or SWAN on Swan Chain
 
 Run `computing-provider inference deposit` to see supported chains, contract addresses, and minimum amounts. Deposit via the [Provider Dashboard](https://inference.swanchain.io/dashboard) or directly to the contract from your wallet.
 
