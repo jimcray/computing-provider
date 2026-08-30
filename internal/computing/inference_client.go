@@ -96,6 +96,12 @@ type RegisterPayload struct {
 	ModelDeclarations []ModelDeclaration `json:"model_declarations,omitempty"`
 	Capabilities      []string           `json:"capabilities"`
 	Hardware          *HardwareInfo      `json:"hardware,omitempty"`
+	// The agent's own build, so the platform can tell operators when a newer
+	// release exists (#93). omitempty in both directions: an older agent simply
+	// omits these, and the platform reads their absence as "pre-0.4.0" rather
+	// than needing a flag day.
+	CPVersion string `json:"cp_version,omitempty"` // build.BuildVersion, e.g. "0.4.0"
+	Commit    string `json:"commit,omitempty"`     // build.CurrentCommit
 }
 
 // InferencePayload is sent to provider for inference request
@@ -1015,6 +1021,8 @@ func (c *InferenceClient) register() error {
 		ModelDeclarations: c.buildModelDeclarations(),
 		Capabilities:      []string{"inference", "verification"},
 		Hardware:          hardware,
+		CPVersion:         build.BuildVersion,
+		Commit:            build.CurrentCommit,
 	}
 
 	payloadBytes, err := json.Marshal(payload)
