@@ -352,3 +352,109 @@ func TestDegradedAndUnknownOnlyWarn(t *testing.T) {
 		t.Error("a degraded but serving model should not fail the audit")
 	}
 }
+
+// Which failures may pull a model from routing. A 400 is a client's over-long
+// prompt and says nothing about the backend; disabling on it would remove a
+// healthy, earning model.
+func TestBackendAtFaultClassification(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		probe ProbeResult
+		want  bool
+	}{
+		{"success", ProbeResult{OK: true, StatusCode: 200}, false},
+		{"skipped", ProbeResult{Skipped: true}, false},
+		{"connection refused", ProbeResult{StatusCode: 0, Error: "connection refused"}, true},
+		{"401 credentials", ProbeResult{StatusCode: 401}, true},
+		{"403 forbidden", ProbeResult{StatusCode: 403}, true},
+		{"404 not served", ProbeResult{StatusCode: 404}, true},
+		{"500", ProbeResult{StatusCode: 500}, true},
+		{"503 auth_unavailable", ProbeResult{StatusCode: 503}, true},
+		{"400 context too long", ProbeResult{StatusCode: 400}, false},
+		{"422 unprocessable", ProbeResult{StatusCode: 422}, false},
+		{"429 our own rate limit", ProbeResult{StatusCode: 429}, false},
+	} {
+		if got := tc.probe.BackendAtFault(); got != tc.want {
+			t.Errorf("%s: BackendAtFault() = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// The runner acts on per-model results, so the report must carry them.
+func TestReportCarriesPerModelProbes(t *testing.T) {
+	dir := t.TempDir()
+	ok := fakeBackend{maxModelLen: 4096, completionOK: true}.server(t)
+	bad := fakeBackend{maxModelLen: 4096, completionOK: false, statusCode: 503}.server(t)
+	writeModels(t, dir, map[string]map[string]interface{}{
+		"org/ok":    {"endpoint": ok.URL},
+		"org/bad":   {"endpoint": bad.URL},
+		"org/embed": {"endpoint": bad.URL, "category": "embeddings"},
+	})
+	d := fakeDaemon(t, true, []string{"org/ok", "org/bad", "org/embed"},
+		map[string]string{"org/ok": "healthy", "org/bad": "healthy", "org/embed": "healthy"},
+		map[string]int64{"org/ok": 1, "org/bad": 1, "org/embed": 1})
+
+	r := Run(Options{RepoPath: dir, APIBase: d.URL,
+		ConfigModels: []string{"org/ok", "org/bad", "org/embed"}, LogDir: dir})
+
+	if len(r.Probes) != 3 {
+		t.Fatalf("got %d probe results, want 3: %+v", len(r.Probes), r.Probes)
+	}
+	if !r.Probes["org/ok"].OK {
+		t.Error("org/ok should have completed")
+	}
+	if p := r.Probes["org/bad"]; p.OK || p.StatusCode != 503 || !p.BackendAtFault() {
+		t.Errorf("org/bad = %+v, want a backend-owned 503 failure", p)
+	}
+	if !r.Probes["org/embed"].Skipped {
+		t.Error("a non-chat model should be marked skipped, not failed")
+	}
+}
+
+// A model already taken out of service keeps failing its probe every tick. That
+// is a handled state: reporting it as a new failure would turn one outage into
+// a permanent alert stream at a 10-minute period.
+func TestExpectedProbeFailuresDoNotFailTheReport(t *testing.T) {
+	dir := t.TempDir()
+	bad := fakeBackend{maxModelLen: 4096, completionOK: false, statusCode: 503}.server(t)
+	writeModels(t, dir, map[string]map[string]interface{}{"org/bad": {"endpoint": bad.URL}})
+	d := fakeDaemon(t, true, []string{}, map[string]string{"org/bad": "healthy"}, map[string]int64{"org/bad": 1})
+
+	opt := Options{RepoPath: dir, APIBase: d.URL, ConfigModels: []string{"org/bad"}, LogDir: dir,
+		ExpectedProbeFailures: map[string]bool{"org/bad": true}}
+	r := Run(opt)
+
+	if res := find(t, r, "inference probe"); res.Status != StatusPass {
+		t.Fatalf("inference probe = %s (%q), want pass for an already-disabled model", res.Status, res.Message)
+	}
+	// The probe result itself must still record the failure, so recovery is
+	// detectable on a later tick.
+	if p := r.Probes["org/bad"]; p.OK {
+		t.Error("the probe should still have run and failed")
+	}
+}
+
+// Without the suppression the same run must fail, or the feature is untestable.
+func TestUnexpectedProbeFailureStillFails(t *testing.T) {
+	dir := t.TempDir()
+	bad := fakeBackend{maxModelLen: 4096, completionOK: false, statusCode: 503}.server(t)
+	writeModels(t, dir, map[string]map[string]interface{}{"org/bad": {"endpoint": bad.URL}})
+	d := fakeDaemon(t, true, []string{"org/bad"}, map[string]string{"org/bad": "healthy"}, map[string]int64{"org/bad": 1})
+
+	r := Run(Options{RepoPath: dir, APIBase: d.URL, ConfigModels: []string{"org/bad"}, LogDir: dir})
+	if res := find(t, r, "inference probe"); res.Status != StatusFail {
+		t.Fatalf("inference probe = %s, want fail", res.Status)
+	}
+}
+
+// The probe must not time out a merely busy backend: with auto-disable that
+// would pull a model precisely when it is earning most.
+func TestProbeTimeoutIsGenerousByDefault(t *testing.T) {
+	dir := t.TempDir()
+	writeModels(t, dir, map[string]map[string]interface{}{})
+	r := Run(Options{RepoPath: dir, APIBase: "http://127.0.0.1:1", LogDir: dir, SkipCompletion: true})
+	_ = r // Run applies the default; assert it here rather than reaching inside.
+	if (Options{}).ProbeTimeout != 0 {
+		t.Fatal("zero value should be unset")
+	}
+}

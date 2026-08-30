@@ -41,11 +41,49 @@ type Result struct {
 	Hint    string `json:"hint,omitempty"` // What to do about it
 }
 
+// ProbeResult is one model's answer to a real inference request.
+type ProbeResult struct {
+	OK bool `json:"ok"`
+	// StatusCode is the backend's HTTP status, or 0 when the request never got
+	// that far (connection refused, timeout, DNS).
+	StatusCode int    `json:"status_code,omitempty"`
+	Error      string `json:"error,omitempty"`
+	Skipped    bool   `json:"skipped,omitempty"` // Not a chat model
+}
+
+// BackendAtFault reports whether this failure is the backend's to answer for.
+//
+// The distinction decides whether a model may be pulled from routing. A 400 is
+// the client's — an over-long prompt against a correctly advertised window
+// looks identical to a broken model in a raw failure count, and disabling on it
+// would remove a healthy, earning model. A 429 is our own rate limiter. What is
+// left is the backend genuinely being unable to serve: it is down, it is
+// refusing our credentials, or it does not have the model at all.
+func (p ProbeResult) BackendAtFault() bool {
+	if p.OK || p.Skipped {
+		return false
+	}
+	switch {
+	case p.StatusCode == 0: // never reached the backend
+		return true
+	case p.StatusCode == 400, p.StatusCode == 422, p.StatusCode == 429:
+		return false
+	case p.StatusCode == 401, p.StatusCode == 403, p.StatusCode == 404:
+		return true
+	case p.StatusCode >= 500:
+		return true
+	}
+	return false
+}
+
 // Report is the outcome of a full run.
 type Report struct {
 	StartedAt time.Time `json:"started_at"`
 	Duration  string    `json:"duration"`
 	Results   []Result  `json:"results"`
+	// Probes carries each model's inference-probe outcome, keyed by model ID.
+	// The runner acts on these; the Results entry is the human summary.
+	Probes map[string]ProbeResult `json:"probes,omitempty"`
 }
 
 // Failed reports whether any check failed.
@@ -97,6 +135,16 @@ type Options struct {
 	// model. Useful in tests and on metered backends.
 	SkipCompletion bool
 	HTTPTimeout    time.Duration
+	// ProbeTimeout bounds the real completion. It is deliberately far longer
+	// than HTTPTimeout: a max_tokens:1 request still queues behind in-flight
+	// work, and timing out a merely busy backend would look identical to a
+	// broken one — which, with auto-disable, would pull a model precisely when
+	// it is earning most.
+	ProbeTimeout time.Duration
+	// ExpectedProbeFailures are models already known to be out of service. Their
+	// probe still runs, so recovery can be detected, but a failure is not
+	// reported as a new problem — otherwise a handled state alerts on every tick.
+	ExpectedProbeFailures map[string]bool
 }
 
 // modelEntry mirrors the parts of models.json this audit needs.
@@ -130,9 +178,11 @@ func (m modelEntry) chatCompatible() bool {
 }
 
 type checker struct {
-	opt    Options
-	client *http.Client
-	res    []Result
+	opt         Options
+	client      *http.Client
+	probeClient *http.Client
+	res         []Result
+	probes      map[string]ProbeResult
 }
 
 func (c *checker) add(name string, status Status, msg, hint string) {
@@ -148,7 +198,15 @@ func Run(opt Options) Report {
 	if opt.MinFreeGB == 0 {
 		opt.MinFreeGB = 10
 	}
-	c := &checker{opt: opt, client: &http.Client{Timeout: opt.HTTPTimeout}}
+	if opt.ProbeTimeout <= 0 {
+		opt.ProbeTimeout = 60 * time.Second
+	}
+	c := &checker{
+		opt:         opt,
+		client:      &http.Client{Timeout: opt.HTTPTimeout},
+		probeClient: &http.Client{Timeout: opt.ProbeTimeout},
+		probes:      make(map[string]ProbeResult),
+	}
 	start := time.Now()
 
 	models := c.checkModelsConfig()
@@ -162,7 +220,12 @@ func Run(opt Options) Report {
 	c.checkTraffic()
 	c.checkDisk()
 
-	return Report{StartedAt: start, Duration: time.Since(start).Round(time.Millisecond).String(), Results: c.res}
+	return Report{
+		StartedAt: start,
+		Duration:  time.Since(start).Round(time.Millisecond).String(),
+		Results:   c.res,
+		Probes:    c.probes,
+	}
 }
 
 // checkModelsConfig compares models.json against config.toml's Models list.
@@ -402,37 +465,29 @@ func (c *checker) checkCompletions(models map[string]modelEntry) {
 		return
 	}
 	var failed []string
-	var probed, skipped int
+	var probed, skipped, expected int
 	for id, m := range models {
 		if !m.chatCompatible() {
 			skipped++
+			c.probes[id] = ProbeResult{Skipped: true}
 			continue
 		}
 		probed++
-		name := m.servedName(id)
-		body, _ := json.Marshal(map[string]interface{}{
-			"model":      name,
-			"messages":   []map[string]string{{"role": "user", "content": "ping"}},
-			"max_tokens": 1,
-		})
-		req, err := http.NewRequest("POST", strings.TrimRight(m.Endpoint, "/")+"/v1/chat/completions", bytes.NewReader(body))
-		if err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %v", id, err))
+		res := c.probeModel(id, m)
+		c.probes[id] = res
+		if res.OK {
 			continue
 		}
-		req.Header.Set("Content-Type", "application/json")
-		if m.APIKey != "" {
-			req.Header.Set("Authorization", "Bearer "+m.APIKey)
-		}
-		resp, err := c.client.Do(req)
-		if err != nil {
-			failed = append(failed, fmt.Sprintf("%s: %v", id, err))
+		if c.opt.ExpectedProbeFailures[id] {
+			// Already out of service and known to be failing; the probe exists
+			// here only to notice when it starts working again.
+			expected++
 			continue
 		}
-		snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
-		resp.Body.Close()
-		if resp.StatusCode >= 300 {
-			failed = append(failed, fmt.Sprintf("%s: HTTP %d %s", id, resp.StatusCode, strings.TrimSpace(string(snippet))))
+		if res.StatusCode > 0 {
+			failed = append(failed, fmt.Sprintf("%s: HTTP %d %s", id, res.StatusCode, res.Error))
+		} else {
+			failed = append(failed, fmt.Sprintf("%s: %s", id, res.Error))
 		}
 	}
 	sort.Strings(failed)
@@ -441,11 +496,42 @@ func (c *checker) checkCompletions(models map[string]modelEntry) {
 			"These models pass health checks but cannot serve. Check the backend engine and any upstream credentials.")
 		return
 	}
-	msg := fmt.Sprintf("all %d models completed a request", probed)
+	msg := fmt.Sprintf("all %d models completed a request", probed-expected)
 	if skipped > 0 {
 		msg += fmt.Sprintf(" (%d non-chat models not probed)", skipped)
 	}
+	if expected > 0 {
+		msg += fmt.Sprintf(" (%d already disabled and still failing)", expected)
+	}
 	c.add("inference probe", StatusPass, msg, "")
+}
+
+// probeModel sends one minimal completion and reports what came back.
+func (c *checker) probeModel(id string, m modelEntry) ProbeResult {
+	body, _ := json.Marshal(map[string]interface{}{
+		"model":      m.servedName(id),
+		"messages":   []map[string]string{{"role": "user", "content": "ping"}},
+		"max_tokens": 1,
+	})
+	req, err := http.NewRequest("POST", strings.TrimRight(m.Endpoint, "/")+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return ProbeResult{Error: err.Error()}
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if m.APIKey != "" {
+		req.Header.Set("Authorization", "Bearer "+m.APIKey)
+	}
+	resp, err := c.probeClient.Do(req)
+	if err != nil {
+		// No status: the request never reached the backend.
+		return ProbeResult{Error: err.Error()}
+	}
+	defer resp.Body.Close()
+	snippet, _ := io.ReadAll(io.LimitReader(resp.Body, 200))
+	if resp.StatusCode >= 300 {
+		return ProbeResult{StatusCode: resp.StatusCode, Error: strings.TrimSpace(string(snippet))}
+	}
+	return ProbeResult{OK: true, StatusCode: resp.StatusCode}
 }
 
 // checkTraffic flags models that are registered and healthy but have never been
