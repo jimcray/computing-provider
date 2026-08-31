@@ -157,6 +157,12 @@ type SelfCheck struct {
 	// FailuresBeforeDisable is how many consecutive failed probes are required
 	// before deregistering, so a single transient blip does not pull a model.
 	FailuresBeforeDisable int `toml:"FailuresBeforeDisable"` // Default: 2
+	// AlertAfterFailures is how many consecutive audits must report the same
+	// problem before it is emailed. Without it a transient upstream error — a
+	// proxy answering 502 once — pages the operator while being nowhere near
+	// severe enough to deregister anything, so the alerting threshold and the
+	// acting threshold disagree.
+	AlertAfterFailures int `toml:"AlertAfterFailures"` // Default: 2; -1 alerts on the first audit
 }
 
 // Enabled reports whether the periodic audit runs (default true).
@@ -167,6 +173,24 @@ func (s SelfCheck) AutoDisableEnabled() bool { return s.AutoDisable == nil || *s
 
 // AutoRecoverEnabled reports whether recovered models are re-registered (default true).
 func (s SelfCheck) AutoRecoverEnabled() bool { return s.AutoRecover == nil || *s.AutoRecover }
+
+// AlertThreshold returns how many consecutive audits must agree before a
+// problem is emailed.
+//
+// Unset (0) takes the default. A negative value means "alert on the first
+// audit" — an operator who wants the old immediate behaviour needs a way to ask
+// for it, and silently converting their setting into a two-audit delay would
+// leave them believing they had turned the debounce off.
+func (s SelfCheck) AlertThreshold() int {
+	switch {
+	case s.AlertAfterFailures < 0:
+		return 1
+	case s.AlertAfterFailures == 0:
+		return 2
+	default:
+		return s.AlertAfterFailures
+	}
+}
 
 // Interval is the audit period.
 func (s SelfCheck) Interval() time.Duration {
