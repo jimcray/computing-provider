@@ -10,10 +10,9 @@ import {
 } from 'lucide-react';
 import { usePolling } from './hooks/usePolling';
 import { api } from './api/client';
-import { EarningsPanel } from './components/EarningsPanel';
+import { EarningsChart } from './components/EarningsChart';
 import { MetricsPanel } from './components/MetricsPanel';
 import { GPUPanel } from './components/GPUPanel';
-import { ModelHealthMap } from './components/ModelHealthMap';
 import { ModelsPanel } from './components/ModelsPanel';
 import { RequestManagementPanel } from './components/RequestManagementPanel';
 import { ConnectionStatus } from './components/ConnectionStatus';
@@ -61,8 +60,6 @@ function App() {
 
   const {
     data: earnings,
-    error: earningsError,
-    loading: earningsLoading,
     refetch: refetchEarnings,
   } = usePolling(useCallback(() => api.getEarnings(), []), POLL_INTERVAL);
 
@@ -213,9 +210,9 @@ function App() {
                 <h2 id="provider-health-heading" className="text-xl font-semibold text-white">Provider health</h2>
                 <p className="mt-1 text-sm text-slate-400">Live service, request, and capacity signals.</p>
               </div>
-              <MetricsPanel metrics={metrics} loading={metricsLoading} error={metricsError} />
+              <MetricsPanel metrics={metrics} loading={metricsLoading} error={metricsError} earnings={earnings} />
               <div className="mt-4">
-                <EarningsPanel earnings={earnings} loading={earningsLoading} error={earningsError} />
+                <EarningsChart />
               </div>
             </section>
 
@@ -224,11 +221,6 @@ function App() {
                 <h2 id="operations-heading" className="text-xl font-semibold text-white">Operations</h2>
                 <p className="mt-1 text-sm text-slate-400">Model readiness and local resource pressure.</p>
               </div>
-              <ModelHealthMap
-                models={models?.models ?? []}
-                loading={modelsLoading}
-                onModelClick={setSelectedModelId}
-              />
               <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1.25fr)_minmax(340px,0.75fr)]">
                 <ModelsPanel
                   models={models?.models ?? []}

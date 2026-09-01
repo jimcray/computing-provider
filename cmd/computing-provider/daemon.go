@@ -253,10 +253,19 @@ func runDaemon(cctx *cli.Context) error {
 		if err != nil {
 			logs.GetLogger().Debugf("Model pricing is temporarily unavailable: %v", err)
 		}
+		// A short rolling health record per model, so each row can show whether
+		// it has been steady or flapping rather than only its state right now.
+		healthLog := make(map[string][]string, len(models))
+		for _, model := range models {
+			if log := inferenceService.ModelHealthLog(model.ID); len(log) > 0 {
+				healthLog[model.ID] = log
+			}
+		}
 		c.JSON(200, gin.H{
-			"models":  models,
-			"summary": summary,
-			"prices":  prices,
+			"models":     models,
+			"summary":    summary,
+			"prices":     prices,
+			"health_log": healthLog,
 			// Which window is reported upstream for each model and where it came
 			// from, so an operator can see an unreported window without reading
 			// the log (#75).
@@ -446,6 +455,41 @@ func runDaemon(cctx *cli.Context) error {
 	router.GET("/inference/earnings", func(c *gin.Context) {
 		earnings := computing.CalculateEarnings(c.Request.Context(), inferenceService.GetMetrics(), modelPrices, providerStats)
 		c.JSON(200, earnings)
+	})
+
+	// Earnings over time, priced from the node's own stored history. Windows
+	// longer than the retained history report what they actually cover.
+	router.GET("/inference/earnings/history", func(c *gin.Context) {
+		durationStr := c.DefaultQuery("duration", "24h")
+		duration, err := time.ParseDuration(durationStr)
+		if err != nil {
+			// 30d is not a Go duration, but it is the window an operator asks
+			// for, so it is accepted rather than rejected as malformed.
+			switch durationStr {
+			case "7d":
+				duration = 7 * 24 * time.Hour
+			case "30d":
+				duration = 30 * 24 * time.Hour
+			default:
+				c.JSON(400, gin.H{"error": "invalid duration"})
+				return
+			}
+		}
+		// Display bucket. The samples themselves are always fetched at the
+		// finest resolution: the deltas have to be computed before any
+		// down-sampling, or a restart inside a bucket swallows the traffic that
+		// preceded it.
+		bucket := time.Hour
+		if duration > 7*24*time.Hour {
+			bucket = 24 * time.Hour
+		}
+		points, err := inferenceService.GetMetricsHistory(duration, time.Minute)
+		if err != nil {
+			c.JSON(500, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(200, computing.CalculateEarningsHistory(
+			c.Request.Context(), points, inferenceService.GetMetrics(), modelPrices, durationStr, bucket))
 	})
 
 	// Historical metrics endpoint
